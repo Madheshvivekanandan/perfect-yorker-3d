@@ -1,0 +1,22 @@
+# Downloaded third-party assets (re-create with ./setup_assets.sh)
+assets/
+
+# Render outputs: .blend scene, frames, previews, logs, intermediate audio
+render/
+*.blend
+*.blend1
+*.blend@
+*.exr
+
+# Top-level copy of the final video (the committed copy lives in media/)
+/cricket_yorker.mp4
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+
+# OS / editors
+.DS_Store
+.idea/
+.vscode/
