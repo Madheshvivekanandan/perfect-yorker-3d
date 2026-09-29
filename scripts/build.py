@@ -16,7 +16,7 @@ import props as P
 from anim import (WORLD_FPS, BowlerTrack, bowling_overrides, breathe, celebration_pose, lerp_keys, look_at,
                   place, stance_pose)
 from characters import kit, make_human, remove_part
-from posing import MocapClip, Skeleton, axis_rot, blend, copy_pose, point_bone, rotate_subtree, smoothstep
+from posing import MocapClip, Skeleton, axis_rot, blend, bn, copy_pose, palm_frame, point_bone, rotate_subtree, smoothstep
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MOCAP = os.path.join(ROOT, "assets", "mocap")
@@ -122,10 +122,10 @@ track.build(T_END, rate_fn, heading_fn, stop_fn)
 # place the run so the front foot lands behind the popping crease
 _, pfoot = next((c for c in track.foot_contacts("Left", T_REL - 0.05, T_REL + 0.05)), (None, None))
 h, _ = bsk.fk(track.raw[track.index(T_REL)])
-shift = Vector((BOWLER_X - track.raw[track.index(T_REL)]["root"].x,
+shift = Vector((BOWLER_X - track.raw[track.index(T_REL)]["_pos"].x,
                 CREASE_FRONT_FOOT_Y - h["LeftFoot"].y, 0))
 for p in track.raw:
-    p["root"] += shift
+    p["_pos"] += shift
 
 stand = copy_pose(track.raw[0])
 
@@ -138,7 +138,7 @@ def bowler_pose(t):
         base = copy_pose(stand)
         # stand where the bowler stopped, facing the heading direction
         rotate_subtree(bsk, base, "Hips", axis_rot((0, 0, 1), heading_fn(t)))
-        base["root"] = Vector((p["root"].x, p["root"].y, stand["root"].z))
+        base["_pos"] = Vector((p["_pos"].x, p["_pos"].y, stand["_pos"].z))
         cel = celebration_pose(bsk, base, t, T_CEL)
         p = blend(bsk, p, cel, w)
     return p
@@ -165,15 +165,14 @@ for f in bowler_frames:
     t = f / WORLD_FPS
     p = bowler_pose(t)
     bsk.key(p, f)
-    heads, tails = bsk.fk(p)
-    hand_track[f] = (heads["RightHand"], tails["RightHand"], p["RightHand"])
+    hand_track[f] = palm_frame(bsk, p, "Right")
 print("bowler keyed", len(bowler_frames))
 
 # ============================================================== ball trajectory
 G = 9.81
 f_rel = int(round(T_REL * WORLD_FPS))
-hh, ht, hq = hand_track[f_rel]
-P0 = ht + (ht - hh).normalized() * 0.01
+pc, pn, pf = hand_track[f_rel]
+P0 = pc + pn * (P.BALL_R + 0.012)
 SPEED = 39.0                          # ~140 km/h
 BOUNCE_Y = 0.95                       # yorker: pitches right at the batsman's toes
 STUMP_FRONT = P.STUMP_R + P.BALL_R
@@ -194,9 +193,8 @@ def ball_pos(t):
         f = int(round(t * WORLD_FPS))
         # closest keyed hand sample
         k = min(hand_track.keys(), key=lambda x: abs(x - f))
-        hh, ht, hq = hand_track[k]
-        palm = hq @ Vector((0, 0, 1))
-        return ht - (ht - hh).normalized() * 0.02 + palm * 0.03
+        pc, pn, pf = hand_track[k]
+        return pc + pn * (P.BALL_R + 0.012)
     if t <= T_BOUNCE:
         u = t - T_REL
         s = u / (T_HIT - T_REL)
@@ -244,7 +242,12 @@ for f in ball_frames:
 # ============================================================== batsman + bat
 ssk = skels["Batsman"]
 BAT_POS = Vector((-0.40, 0.92, 0))
-stance = stance_pose(ssk, knee=22, lean=28, spread=10, head_yaw=78, head_pitch=5)
+stance = stance_pose(ssk, knee=22, lean=28, spread=10, head_yaw=78, head_pitch=5, hands="grip")
+
+
+def batsman_turn(t):
+    """After being bowled the batsman turns his body round to look at the wreckage (degrees of yaw)."""
+    return -55 * smoothstep(T_HIT + 0.35, T_HIT + 1.2, t) * (1 - 0.4 * smoothstep(T_HIT + 3.0, T_HIT + 4.5, t))
 
 
 def bat_matrix(top, toe, face_dir=Vector((0, 1, 0))):
@@ -278,7 +281,11 @@ def bat_state(t):
         toe = lerp_keys(keys_toe, t)
     # keep the bat length constant
     d = (toe - top).normalized()
-    return top, top + d * 0.95
+    toe = top + d * 0.95
+    # the bat turns with the batsman when he looks back at his stumps
+    q = axis_rot((0, 0, 1), batsman_turn(t))
+    piv = Vector((BAT_POS.x, BAT_POS.y, 0))
+    return piv + q @ (top - piv), piv + q @ (toe - piv)
 
 
 bat.rotation_mode = 'QUATERNION'
@@ -298,12 +305,13 @@ for f in bat_frames:
     bat.keyframe_insert("rotation_quaternion", frame=f)
 
 
-def ik(rig, bone, target, pole, pole_angle=0.0):
-    c = rig.pose.bones[bone].constraints.new('IK')
+def ik(rig, side, target, pole, pole_angle=0.0):
+    """Arm IK on the MakeHuman chain: lowerarm02 -> lowerarm01 -> upperarm02 -> upperarm01."""
+    c = rig.pose.bones[f"lowerarm02.{side}"].constraints.new('IK')
     c.target = target
     c.pole_target = pole
     c.pole_angle = pole_angle
-    c.chain_count = 2
+    c.chain_count = 4
     return c
 
 
@@ -321,8 +329,8 @@ gripL = empty("gripL", bat, (0.0, 0.035, -0.07))
 gripR = empty("gripR", bat, (0.0, 0.035, -0.17))
 poleL = empty("poleL", None, (BAT_POS.x + 0.6, BAT_POS.y + 0.9, 0.9))
 poleR = empty("poleR", None, (BAT_POS.x + 0.5, BAT_POS.y - 0.7, 0.6))
-ik(batsman, "LeftForeArm", gripL, poleL)
-ik(batsman, "RightForeArm", gripR, poleR)
+ik(batsman, "L", gripL, poleL)
+ik(batsman, "R", gripR, poleR)
 
 
 def batsman_pose(t):
@@ -330,14 +338,14 @@ def batsman_pose(t):
     # backlift: small torso coil; after the dismissal: stand up, turn to look back at the wreckage
     coil = lerp_keys([(T_REL - 0.45, 0.0), (T_REL + 0.1, 1.0), (T_HIT, 0.4), (T_HIT + 0.2, 0.0)], t)
     rotate_subtree(ssk, p, "LowerBack", axis_rot((0, 0, 1), -8 * coil))
-    rise = smoothstep(T_HIT + 0.9, T_HIT + 2.2, t)
+    rise = smoothstep(T_HIT + 0.35, T_HIT + 1.4, t)
     if rise > 0:
-        up = stance_pose(ssk, knee=6, lean=10, spread=8, head_yaw=0, head_pitch=-5)
+        up = stance_pose(ssk, knee=6, lean=6, spread=8, head_yaw=0, head_pitch=4, hands="grip")
         p = blend(ssk, p, up, rise)
-    pp = place(ssk, p, 90, BAT_POS.x, BAT_POS.y)
-    look = lerp_keys([(0, 0.0), (T_HIT + 0.25, 0.0), (T_HIT + 0.6, 1.0), (T_HIT + 2.4, 1.0), (T_HIT + 3.4, 0.0)], t)
+    pp = place(ssk, p, 90 + batsman_turn(t), BAT_POS.x, BAT_POS.y)
+    look = lerp_keys([(0, 0.0), (T_HIT + 0.3, 0.0), (T_HIT + 0.8, 1.0), (T_HIT + 3.0, 1.0), (T_HIT + 4.0, 0.3)], t)
     if look > 0:
-        look_at(ssk, pp, (0.0, -0.1, 0.35), look, pitch_limit=45)
+        look_at(ssk, pp, (0.0, -0.3, 0.8), look, pitch_limit=15)
     return pp
 
 
@@ -348,7 +356,7 @@ for f in key_times(0, T_END, [(T_REL - 0.6, T_HIT + 3.5, 4)]):
 nsk = skels["NonStriker"]
 ns_bat.parent = nonstriker
 ns_bat.parent_type = 'BONE'
-ns_bat.parent_bone = "RightHand"
+ns_bat.parent_bone = "wrist.R"
 ns_bat.rotation_euler = (math.radians(90), 0, 0)
 ns_bat.location = (0, -0.06, 0.0)
 
@@ -356,7 +364,8 @@ ns_bat.location = (0, -0.06, 0.0)
 def ns_pose(t):
     p = stance_pose(nsk, knee=8, lean=8, spread=7, head_yaw=-10,
                     arm_dirs={"RightArm": (-0.15, -0.35, -0.9), "RightForeArm": (-0.05, -0.8, -0.55),
-                              "LeftArm": (0.15, 0.0, -0.98), "LeftForeArm": (0.1, -0.3, -0.9)})
+                              "LeftArm": (0.15, 0.0, -0.98), "LeftForeArm": (0.1, -0.3, -0.9)},
+                    hands=("relaxed", "grip"))
     p = breathe(nsk, p, t, phase=0.3)
     # backs up a couple of steps as the ball is bowled (slides a little along the pitch)
     back = smoothstep(T_REL - 0.6, T_REL + 0.6, t) * 1.4
@@ -382,7 +391,7 @@ def fielder_pose(sk, t, x, y, knee, lean, phase):
     crouch = stance_pose(sk, knee=knee, lean=lean, spread=16,
                          arm_dirs={"LeftArm": (0.12, -0.6, -0.8), "RightArm": (-0.12, -0.6, -0.8),
                                    "LeftForeArm": (-0.25, -0.75, -0.6), "RightForeArm": (0.25, -0.75, -0.6)})
-    upright = stance_pose(sk, knee=4, lean=-6, spread=8,
+    upright = stance_pose(sk, knee=4, lean=-6, spread=8, hands="fist",
                           arm_dirs={"LeftArm": (0.55, 0.0, 0.85), "RightArm": (-0.55, 0.0, 0.85),
                                     "LeftForeArm": (0.3, 0.0, 1.0), "RightForeArm": (-0.3, 0.0, 1.0)})
     # rise into the crouch as the bowler approaches, erupt after the wicket
@@ -393,7 +402,7 @@ def fielder_pose(sk, t, x, y, knee, lean, phase):
     joy = smoothstep(T_HIT + 0.35 + phase, T_HIT + 0.9 + phase, t)
     p = blend(sk, p, upright, joy)
     if joy > 0.5:
-        p["root"].z += 0.12 * abs(math.sin((t - T_HIT - phase) * math.tau * 1.3)) * joy
+        p["_pos"].z += 0.12 * abs(math.sin((t - T_HIT - phase) * math.tau * 1.3)) * joy
     return place(sk, p, 180, x, y)
 
 
@@ -414,7 +423,7 @@ def ring_pose(sk, t, name):
     ready = stance_pose(sk, knee=22, lean=24, spread=12,
                         arm_dirs={"LeftArm": (0.2, -0.5, -0.8), "RightArm": (-0.2, -0.5, -0.8),
                                   "LeftForeArm": (0.0, -0.8, -0.5), "RightForeArm": (0.0, -0.8, -0.5)})
-    joy = stance_pose(sk, knee=4, lean=-4, spread=8,
+    joy = stance_pose(sk, knee=4, lean=-4, spread=8, hands="fist",
                       arm_dirs={"LeftArm": (0.5, 0.0, 0.86), "RightArm": (-0.5, 0.0, 0.86),
                                 "LeftForeArm": (0.3, 0.0, 1.0), "RightForeArm": (-0.3, 0.0, 1.0)})
     p = blend(sk, idle, ready, smoothstep(T_REL - 0.8, T_REL - 0.2, t))
@@ -581,7 +590,7 @@ def aim(cam, pos, target, roll=0.0):
 
 
 def bowler_root(t):
-    return track.raw[track.index(t)]["root"]
+    return track.raw[track.index(t)]["_pos"]
 
 
 def bowler_chest(t):

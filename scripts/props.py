@@ -524,9 +524,9 @@ def attach_to_bone(obj, rig, bone):
 
 def build_pad(name, rig, side, mat):
     """Batting pad: curved shell with vertical bolsters in front of the shin + knee roll."""
-    pb = rig.data.bones[f"{side}Leg"]
-    knee = pb.head_local.copy()
-    ankle = pb.tail_local.copy()
+    s = ".L" if side == "Left" else ".R"
+    knee = rig.data.bones[f"lowerleg01{s}"].head_local.copy()
+    ankle = rig.data.bones[f"lowerleg02{s}"].tail_local.copy()
     bm = bmesh.new()
     rows, cols = 18, 22
     height = (knee - ankle).length + 0.2
@@ -554,27 +554,28 @@ def build_pad(name, rig, side, mat):
     shin = (knee - ankle).normalized()
     rot = Vector((0, 0, 1)).rotation_difference(shin).to_matrix().to_4x4()
     o.matrix_world = Matrix.Translation(ankle + Vector((0, 0.035, 0))) @ rot
-    attach_to_bone(o, rig, f"{side}Leg")
+    attach_to_bone(o, rig, f"lowerleg01{s}")
     return o
 
 
 def build_glove(name, rig, side, mat):
-    b = rig.data.bones[f"{side}Hand"]
+    s = ".L" if side == "Left" else ".R"
+    b = rig.data.bones[f"wrist{s}"]
     bm = bmesh.new()
     bmesh.ops.create_cube(bm, size=1)
-    bmesh.ops.scale(bm, vec=(0.06, 0.16, 0.10), verts=bm.verts)
-    bmesh.ops.translate(bm, vec=(0, 0.05, 0), verts=bm.verts)
+    bmesh.ops.scale(bm, vec=(0.095, 0.14, 0.085), verts=bm.verts)
+    bmesh.ops.translate(bm, vec=(0, 0.06, 0), verts=bm.verts)
     o = mesh_obj(name, bm)
     o.modifiers.new("sub", 'SUBSURF').levels = 2
     shade_smooth(o)
     o.data.materials.append(mat)
     o.matrix_world = b.matrix_local.copy()
-    attach_to_bone(o, rig, f"{side}Hand")
+    attach_to_bone(o, rig, f"wrist{s}")
     return o
 
 
 def build_helmet(name, rig, shell_mat, grille_mat):
-    hb = rig.data.bones["Head"]
+    hb = rig.data.bones["head"]
     c = hb.head_local + (hb.tail_local - hb.head_local) * 0.55 + Vector((0, 0.01, 0))
     R = 0.132
     bm = bmesh.new()
@@ -620,5 +621,5 @@ def build_helmet(name, rig, shell_mat, grille_mat):
     vb = link(bpy.data.objects.new(f"{name}_vbar", cu)); vb.location = c
     vb.data.materials.append(grille_mat)
     for part in [o, pk, vb] + bars:
-        attach_to_bone(part, rig, "Head")
+        attach_to_bone(part, rig, "head")
     return o

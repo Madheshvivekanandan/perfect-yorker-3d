@@ -1,7 +1,7 @@
 """Character animation: mocap run-up + procedural bowling action, batsman and fielders."""
 import math
 from mathutils import Quaternion, Vector
-from posing import (Retargeter, axis_rot, blend, copy_pose, point_bone, rotate_all, rotate_subtree,
+from posing import (Retargeter, axis_rot, blend, copy_pose, hand_shape, point_bone, rotate_all, rotate_subtree,
                     smoothstep)
 
 WORLD_FPS = 240
@@ -25,29 +25,48 @@ def lerp_keys(keys, t):
     return keys[-1][1]
 
 
-def look_at(skel, pose, target, weight=1.0, pitch_limit=35):
+def _yaw_pitch(v):
+    return math.atan2(v.x, -v.y), math.asin(max(-1.0, min(1.0, v.normalized().z)))
+
+
+def look_at(skel, pose, target, weight=1.0, pitch_limit=30, yaw_limit=75, spine_share=0.35):
+    """Turn the head toward target like a real person: yaw and pitch are solved separately (no roll),
+    the neck is limited to human ranges, and part of a big turn is taken by the upper spine."""
+    if weight <= 0:
+        return
     heads, _ = skel.fk(pose)
     head = heads["Head"]
-    fwd_rest = Vector((0, -1, 0))
-    f = (pose["Head"] @ skel.rest_rot["Head"].inverted()) @ fwd_rest
-    d = (Vector(target) - head).normalized()
-    # limit pitch
-    horiz = Vector((d.x, d.y, 0)).normalized()
-    el = math.asin(max(-1, min(1, d.z)))
-    el = max(-math.radians(pitch_limit), min(math.radians(pitch_limit), el))
-    d = horiz * math.cos(el) + Vector((0, 0, math.sin(el)))
-    q = f.rotation_difference(d)
-    q = Quaternion().slerp(q, weight)
-    half = Quaternion().slerp(q, 0.5)
-    rotate_subtree(skel, pose, "Neck", half)
-    rotate_subtree(skel, pose, "Head", half)
+    face = lambda: (pose["Head"] @ skel.rest_rot["Head"].inverted()) @ Vector((0, -1, 0))
+    chest = (pose["Spine1"] @ skel.rest_rot["Spine1"].inverted()) @ Vector((0, -1, 0))
+    d = Vector(target) - head
+    chest_yaw, _ = _yaw_pitch(chest)
+    want_yaw, want_pitch = _yaw_pitch(d)
+    rel = (want_yaw - chest_yaw + math.pi) % math.tau - math.pi          # yaw relative to the chest
+    lim = math.radians(yaw_limit)
+    spine_yaw = rel * spine_share
+    neck_yaw = max(-lim, min(lim, rel - spine_yaw))
+    want_pitch = max(-math.radians(pitch_limit), min(math.radians(pitch_limit * 0.8), want_pitch))
+    if abs(spine_yaw) > 1e-4:
+        rotate_subtree(skel, pose, "Spine1", Quaternion((0, 0, 1), spine_yaw * weight))
+    cur_yaw, cur_pitch = _yaw_pitch(face())
+    goal_yaw = chest_yaw + spine_yaw + neck_yaw
+    dyaw = ((goal_yaw - cur_yaw + math.pi) % math.tau - math.pi) * weight
+    qy = Quaternion((0, 0, 1), dyaw)
+    rotate_subtree(skel, pose, "Neck", Quaternion().slerp(qy, 0.5))
+    rotate_subtree(skel, pose, "Head", Quaternion().slerp(qy, 0.5))
+    f = face()
+    _, cur_pitch = _yaw_pitch(f)
+    side = Vector((0, 0, 1)).cross(Vector((f.x, f.y, 0)).normalized())      # head's lateral axis
+    qp = Quaternion(side, -(want_pitch - cur_pitch) * weight)
+    rotate_subtree(skel, pose, "Neck", Quaternion().slerp(qp, 0.2))     # nod mostly from the head, neck stays tall
+    rotate_subtree(skel, pose, "Head", Quaternion().slerp(qp, 0.8))
 
 
 def fix_feet_to_ground(skel, pose, ground=0.0, margin=0.015):
     h, t = skel.fk(pose)
     low = min(h["LeftToeBase"].z, h["RightToeBase"].z, t["LeftToeBase"].z, t["RightToeBase"].z,
               h["LeftFoot"].z - 0.06, h["RightFoot"].z - 0.06)
-    pose["root"].z += ground + margin - low
+    pose["_pos"].z += ground + margin - low
 
 
 # =================================================================== bowler
@@ -74,7 +93,7 @@ class BowlerTrack:
                 if best is None or d < best[0]:
                     best = (d, c0, L)
         self.loop_err, self.c0, self.L = best
-        a, b = r.pose(self.c0)["root"], r.pose(self.c0 + self.L)["root"]
+        a, b = r.pose(self.c0)["_pos"], r.pose(self.c0 + self.L)["_pos"]
         self.cycle_disp = Vector((b.x - a.x, b.y - a.y, 0))
         print(f"LOOP c0={self.c0:.3f} L={self.L:.3f} err={self.loop_err:.3f} disp={self.cycle_disp.length:.2f}m")
 
@@ -102,12 +121,12 @@ class BowlerTrack:
         """Pose from looping clip B; root carries accumulated cycle displacement. Crossfades the seam."""
         tb, n = self.loop_time(s)
         p = self.rB.pose(tb)
-        p["root"] = p["root"] + self.cycle_disp * n
+        p["_pos"] = p["_pos"] + self.cycle_disp * n
         fade = 0.06
         if tb > self.c0 + self.L - fade:            # blend toward the start of next cycle
             w = (tb - (self.c0 + self.L - fade)) / fade
             q = self.rB.pose(tb - self.L)
-            q["root"] = q["root"] + self.cycle_disp * (n + 1)
+            q["_pos"] = q["_pos"] + self.cycle_disp * (n + 1)
             p = blend(self.skel, p, q, w)
         return p
 
@@ -129,21 +148,21 @@ class BowlerTrack:
             tt = t - self.T0
             if tt < 0:
                 p = copy_pose(stand)
-                src_root = p["root"].copy()
+                src_root = p["_pos"].copy()
             elif tt < self.tA:
                 p = self.rA.pose(tt)
-                src_root = p["root"].copy()
+                src_root = p["_pos"].copy()
             else:
                 # loop clip with variable rate; crossfade from A in the first fade_w seconds
                 p = self.loop_pose(s_loop)
-                src_root = p["root"].copy()
+                src_root = p["_pos"].copy()
                 if clip_state == "A":
                     clip_state = "B"
                     prev_src_root = src_root.copy()
                 if tt < self.tA + fade_w:
                     w = (tt - self.tA) / fade_w
                     pa = self.rA.pose(min(tt, self.rA.clip.duration))
-                    pa["root"] = p["root"]
+                    pa["_pos"] = p["_pos"]
                     p = blend(self.skel, pa, p, smoothstep(0, 1, w))
                 s_loop += dt * rate_fn(t)
             # root integration (horizontal displacement from source, rotated by heading)
@@ -155,9 +174,9 @@ class BowlerTrack:
             yaw = axis_rot((0, 0, 1), heading_fn(t))
             pos += (yaw @ Vector((d.x, d.y, 0))) * (1 - st)
             # orient pose by heading around its own root
-            loc_root = p["root"].copy()
+            loc_root = p["_pos"].copy()
             rotate_all(self.skel, p, yaw, pivot=Vector((loc_root.x, loc_root.y, 0)))
-            p["root"] = Vector((pos.x, pos.y, p["root"].z))
+            p["_pos"] = Vector((pos.x, pos.y, p["_pos"].z))
             self.times.append(t)
             self.raw.append(p)
             t += dt
@@ -185,6 +204,16 @@ class BowlerTrack:
 
 
 def bowling_overrides(skel, p, t, tr, idle_end, T0):
+    """Bowling action + hands: the right hand holds the ball in a seam grip until release, then opens."""
+    out = _bowling_body(skel, p, t, tr, idle_end, T0)
+    let_go = smoothstep(tr - 0.005, tr + 0.07, t)
+    hand_shape(skel, out, "Right", "ball", 1 - let_go)
+    hand_shape(skel, out, "Right", "relaxed", let_go)
+    hand_shape(skel, out, "Left", "relaxed")
+    return out
+
+
+def _bowling_body(skel, p, t, tr, idle_end, T0):
     """Layer the bowling action (upper body) onto a running pose. tr = release time."""
     out = copy_pose(p)
     # ---- idle: polishing the ball on the trouser, looking at the batsman
@@ -253,11 +282,13 @@ def celebration_pose(skel, base, t, tc):
         point_bone(skel, q, f"{side}Arm", arm_up.lerp(arm_dn, 1 - up))
         point_bone(skel, q, f"{side}ForeArm", fore_up.lerp(fore_dn, 1 - up))
     rotate_subtree(skel, q, "Neck", axis_rot((1, 0, 0), -18 * up))
+    hand_shape(skel, q, "Left", "fist")
+    hand_shape(skel, q, "Right", "fist")
     return q
 
 
 # =================================================================== static-ish characters
-def stance_pose(skel, knee=20, lean=25, spread=9, head_yaw=0, head_pitch=0, arm_dirs=None):
+def stance_pose(skel, knee=20, lean=25, spread=9, head_yaw=0, head_pitch=0, arm_dirs=None, hands="relaxed"):
     """Build a pose from the rest pose in the character's local frame (facing -Y, left = +X)."""
     p = skel.rest_pose()
     for side, s in (("Left", 1), ("Right", -1)):
@@ -272,14 +303,17 @@ def stance_pose(skel, knee=20, lean=25, spread=9, head_yaw=0, head_pitch=0, arm_
     rotate_subtree(skel, p, "Head", axis_rot((0, 0, 1), head_yaw * 0.5))
     for bone, d in (arm_dirs or {}).items():
         point_bone(skel, p, bone, d)
+    left, right = (hands, hands) if isinstance(hands, str) else hands
+    hand_shape(skel, p, "Left", left)
+    hand_shape(skel, p, "Right", right)
     fix_feet_to_ground(skel, p)
     return p
 
 
 def place(skel, pose, yaw_deg, x, y):
     q = copy_pose(pose)
-    rotate_all(skel, q, axis_rot((0, 0, 1), yaw_deg), pivot=Vector((q["root"].x, q["root"].y, 0)))
-    q["root"] = Vector((x, y, q["root"].z))
+    rotate_all(skel, q, axis_rot((0, 0, 1), yaw_deg), pivot=Vector((q["_pos"].x, q["_pos"].y, 0)))
+    q["_pos"] = Vector((x, y, q["_pos"].z))
     return q
 
 

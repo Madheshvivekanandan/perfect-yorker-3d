@@ -5,15 +5,15 @@ from bl_ext.user_default.mpfb.services.objectservice import ObjectService
 
 
 def make_human(name, skin="young_asian_male", hair="short02", height=0.6, muscle=0.7, weight=0.45,
-               race=None, clothes=("male_casualsuit04", "shoes06")):
+               race=None, clothes=("male_casualsuit04", "shoes06"), rig="default"):
     info = HumanService._create_default_human_info_dict()
     info["name"] = name
     info["phenotype"].update({"gender": 1.0, "age": 0.45, "muscle": muscle, "weight": weight,
                               "height": height, "proportions": 0.8})
     info["phenotype"]["race"] = race or {"asian": 0.8, "caucasian": 0.1, "african": 0.1}
-    info["rig"] = "cmu_mb"
+    info["rig"] = rig
     info["eyes"] = "high-poly/high-poly.mhclo"
-    info["eyes_material_type"] = "PROCEDURAL_EYES"
+    info["eyes_material_type"] = "MAKESKIN"      # textured iris (brown.mhmat)
     info["eyebrows"] = "eyebrow001/eyebrow001.mhclo"
     info["eyelashes"] = "eyelashes01/eyelashes01.mhclo"
     info["hair"] = f"{hair}/{hair}.mhclo" if hair else ""

@@ -60,6 +60,8 @@ Blender 5.2 (headless, driven by bpy)
 - **Looping a run:** the mocap clips are about 1.5 s long, so it searched for the best loop point and a phase-matched transition between two clips to build a 4-second run-up. It then placed the run so the front foot lands just behind the popping crease.
 - **A bowling action from scratch:** no free bowling mocap exists, so the delivery is hand-authored on top of the running legs: side-on gather, arm windmill, release just past vertical, follow-through.
 - **Slow motion that works with physics:** the world timeline runs at 240 fps. Each shot maps output frames to world time at its own speed, and the Bullet simulation is baked to keyframes so sub-frame slow motion stays smooth.
+- **Hands that look like hands:** the first version used a simplified CMU-style rig with one finger bone, so hands stayed flat and splayed, and the ball "floated" on an open palm. After my feedback it tested finger curling in close-up renders, found that the simple rig's weights couldn't make a fist, and switched every character to MakeHuman's full rig (3 bones per finger). It added an alias layer so the mocap and animation code kept working, plus named hand shapes: a seam **ball grip** until release, **fists** in the celebrations, and a **bat grip** for the batsmen.
+- **Believable heads:** the batsman originally snapped his neck about 150° to look back at his broken stumps and his head flopped forward. Head-turns are now solved as separate yaw and pitch with human neck limits, big turns are shared with the spine, and the batsman turns his whole body (bat included) to look back.
 - **Checking its own work:** after each change it rendered contact sheets and looked at them, then fixed what it saw: missing helmets (a parenting bug), olive-coloured grass, fake-looking sight screens, stumps overlapping in the stump cam, and a bowler's wrist bent the wrong way.
 
 ### What I (the human) actually said
@@ -68,6 +70,7 @@ The whole film came from a handful of messages, roughly:
 2. *"Use only free things."*
 3. *"Use different camera angles."*
 4. *"The bowler's hand is not looking good, it's in a different direction."*
+5. *"The bowler's hand is still very terrible and he's not gripping the ball correctly; the celebration hands are terrible too, and the batsman's head is falling down when the stumps are bowled."*
 
 ---
 
@@ -113,7 +116,7 @@ The full render took about 50 minutes on an Apple M4 Pro (EEVEE, about 4 s per f
 | `scripts/build.py` | Assembles the scene: world, characters, animation, ball flight, physics, cameras and shot list |
 | `scripts/props.py` | Procedural models & materials: pitch, outfield, boundary, stumps, LED bails, ball, bat, pads, helmet |
 | `scripts/characters.py` | Builds MakeHuman characters via MPFB, recolours kits |
-| `scripts/posing.py` | Pose layer system: BVH → rig retargeting, forward kinematics, keyframing |
+| `scripts/posing.py` | Pose layer system: BVH → MakeHuman rig retargeting (via a CMU-name alias layer), FK, keyframing, hand shapes |
 | `scripts/anim.py` | Run-up loop synthesis, bowling action, celebration, stances |
 | `scripts/render.py` | Renders the shot list (per-shot speed and motion blur) |
 | `scripts/audio.py` | Synthesised crowd, heartbeat, whoosh, stumps crash, roar |
@@ -123,7 +126,7 @@ The full render took about 50 minutes on an Apple M4 Pro (EEVEE, about 4 s per f
 ---
 
 ## Honest limitations
-- Faces and hands look computer-generated in close-ups. MakeHuman characters work best at mid-to-long distance.
+- Faces look computer-generated in close-ups. MakeHuman characters work best at mid-to-long distance. Hands use preset finger shapes (grip, fist, relaxed) rather than per-finger animation.
 - The bowling action and batsman are procedural keyframes, not motion capture, so they're convincing at speed but less so frame by frame.
 - The stadium is a 360° photo (HDRI), so there's no parallax in the stands and the crowd is empty.
 
